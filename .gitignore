@@ -9,6 +9,8 @@ backend/bin/
 backend/dist/
 backend/*.exe
 backend/.DS_Store
+backend/.gocache/
+backend/.gomodcache/
 
 # Frontend
 web/node_modules/
@@ -23,6 +25,14 @@ desktop/target/
 desktop/dist/
 desktop/.DS_Store
 desktop/src-tauri/target/
+
+# Global caches
+.gocache/
+.gomodcache/
+.go/
+.claude/
+**/.gocache/
+**/.gomodcache/
 
 # IDE
 .idea/

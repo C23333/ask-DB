@@ -38,6 +38,11 @@ type Config struct {
 	// JWT
 	JWTSecret string
 
+	// Default admin bootstrap
+	DefaultAdminUsername string
+	DefaultAdminPassword string
+	DefaultAdminEmail    string
+
 	// LLM Configuration
 	LLMProvider string // "openai", "claude", "custom"
 	LLMAPIKey   string
@@ -107,7 +112,10 @@ func LoadConfig() *Config {
 		AppOracleSID:      getEnv("APP_ORACLE_SID", oracleSID),
 
 		// JWT
-		JWTSecret: getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+		JWTSecret:            getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+		DefaultAdminUsername: strings.TrimSpace(getEnv("ADMIN_USERNAME", "")),
+		DefaultAdminPassword: strings.TrimSpace(getEnv("ADMIN_PASSWORD", "")),
+		DefaultAdminEmail:    strings.TrimSpace(getEnv("ADMIN_EMAIL", "")),
 
 		// LLM Configuration
 		LLMProvider:        strings.ToLower(strings.TrimSpace(getEnv("LLM_PROVIDER", "openai"))),

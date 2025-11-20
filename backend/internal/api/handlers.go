@@ -205,6 +205,7 @@ func (h *APIHandler) GenerateSQL(c *gin.Context) {
 	if sessionID == "" {
 		sessionID = userID
 	}
+	h.saveChatMessage(userID, sessionID, "user", req.Query)
 	start := time.Now()
 	success := false
 	metricExtra := map[string]interface{}{"session_id": sessionID}
@@ -234,6 +235,7 @@ func (h *APIHandler) GenerateSQL(c *gin.Context) {
 			metricExtra["template_id"] = tpl.ID
 			success = true
 			h.completeProgress(requestID, "生成完成（模版）")
+			h.saveChatMessage(userID, sessionID, "assistant", formatSQLChatMessage(resp))
 			c.JSON(http.StatusOK, models.SuccessResponse{
 				Code:    http.StatusOK,
 				Message: "SQL generated from template",
@@ -267,6 +269,16 @@ func (h *APIHandler) GenerateSQL(c *gin.Context) {
 	h.updateProgress(requestID, "llm_call", "LLM 正在生成 SQL")
 	resp, err := h.llmClient.GenerateSQL(ctx, &req, schemaContext, memoryContext)
 	if err != nil {
+		if guidance := h.generateGuidanceResponse(req, schemaContext, err.Error(), requestID); guidance != nil {
+			h.saveChatMessage(userID, sessionID, "assistant", guidance.Reasoning)
+			c.JSON(http.StatusOK, models.SuccessResponse{
+				Code:    http.StatusOK,
+				Message: "SQL generation guidance",
+				Data:    guidance,
+			})
+			return
+		}
+		h.saveChatMessage(userID, sessionID, "assistant", fmt.Sprintf("生成失败：%s", err.Error()))
 		h.failProgress(requestID, err.Error())
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Code:    http.StatusInternalServerError,
@@ -279,9 +291,23 @@ func (h *APIHandler) GenerateSQL(c *gin.Context) {
 	resp.UsedMemory = len(memEntries) > 0
 	resp.RequestID = requestID
 
+	if h.needsGuidance(resp.SQL) {
+		if guidance := h.generateGuidanceResponse(req, schemaContext, resp.SQL, requestID); guidance != nil {
+			h.saveChatMessage(userID, sessionID, "assistant", guidance.Reasoning)
+			h.completeProgress(requestID, "生成完成（提示）")
+			c.JSON(http.StatusOK, models.SuccessResponse{
+				Code:    http.StatusOK,
+				Message: "SQL guidance",
+				Data:    guidance,
+			})
+			return
+		}
+	}
+
 	h.appendMemory(userID, sessionID, req.Query, resp)
 	success = true
 	h.completeProgress(requestID, "生成完成")
+	h.saveChatMessage(userID, sessionID, "assistant", formatSQLChatMessage(resp))
 
 	c.JSON(http.StatusOK, models.SuccessResponse{
 		Code:    http.StatusOK,
@@ -1064,6 +1090,66 @@ func (h *APIHandler) ExportChatSession(c *gin.Context) {
 	success = true
 }
 
+func (h *APIHandler) AdminListUsers(c *gin.Context) {
+	if h.userService == nil {
+		c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{
+			Code:    http.StatusServiceUnavailable,
+			Message: "User service unavailable",
+		})
+		return
+	}
+	users, err := h.userService.ListUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to load users",
+			Details: err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Code:    http.StatusOK,
+		Message: "Users retrieved",
+		Data:    users,
+	})
+}
+
+func (h *APIHandler) AdminUserUsage(c *gin.Context) {
+	if h.monitor == nil {
+		c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{
+			Code:    http.StatusServiceUnavailable,
+			Message: "Monitor service unavailable",
+		})
+		return
+	}
+	to := time.Now()
+	from := to.Add(-24 * time.Hour)
+	if fromStr := c.Query("from"); fromStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, fromStr); err == nil {
+			from = parsed
+		}
+	}
+	if toStr := c.Query("to"); toStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, toStr); err == nil {
+			to = parsed
+		}
+	}
+	usage, err := h.monitor.QueryUserUsage(from, to)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to load usage stats",
+			Details: err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Code:    http.StatusOK,
+		Message: "Usage stats retrieved",
+		Data:    usage,
+	})
+}
+
 // GetDatabaseInfo returns database information
 func (h *APIHandler) GetDatabaseInfo(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1462,7 +1548,7 @@ func (h *APIHandler) handleWebSocketGeneration(conn *websocket.Conn, userID stri
 				RequestID:  req.RequestID,
 			}
 			h.appendMemory(userID, sessionID, req.Query, resp)
-			h.saveChatMessage(userID, sessionID, "assistant", resp.SQL)
+			h.saveChatMessage(userID, sessionID, "assistant", formatSQLChatMessage(resp))
 			metricExtra["template_id"] = tpl.ID
 			success = true
 			h.writeWSComplete(conn, resp)
@@ -1503,7 +1589,7 @@ func (h *APIHandler) handleWebSocketGeneration(conn *websocket.Conn, userID stri
 	resp.RequestID = req.RequestID
 
 	h.appendMemory(userID, sessionID, req.Query, resp)
-	h.saveChatMessage(userID, sessionID, "assistant", fmt.Sprintf("%s\n\nReasoning:\n%s", resp.SQL, resp.Reasoning))
+	h.saveChatMessage(userID, sessionID, "assistant", formatSQLChatMessage(resp))
 	success = true
 	h.writeWSComplete(conn, resp)
 }
@@ -1547,6 +1633,62 @@ func (h *APIHandler) saveChatMessage(userID, sessionID, role, content string) {
 	}
 	if err := h.chatStore.SaveMessage(userID, sessionID, role, content); err != nil {
 		h.logger.Warn("Failed to save chat message", zap.Error(err))
+	}
+}
+
+func formatSQLChatMessage(resp *models.SQLGenerateResponse) string {
+	if resp == nil {
+		return ""
+	}
+	message := strings.TrimSpace(resp.SQL)
+	reasoning := strings.TrimSpace(resp.Reasoning)
+	if reasoning != "" {
+		if message != "" {
+			message += "\n\n"
+		}
+		message += "Reasoning:\n" + reasoning
+	}
+	if message == "" {
+		message = "生成结果已返回，请查看上方提示。"
+	}
+	return message
+}
+
+func (h *APIHandler) needsGuidance(sql string) bool {
+	sql = strings.TrimSpace(sql)
+	if sql == "" {
+		return true
+	}
+	upper := strings.ToUpper(sql)
+	if strings.HasPrefix(upper, "ERROR") {
+		return true
+	}
+	keywords := []string{"NOT FOUND", "DOES NOT CONTAIN", "NO TABLE"}
+	for _, k := range keywords {
+		if strings.Contains(upper, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *APIHandler) generateGuidanceResponse(req models.SQLGenerateRequest, schemaContext, issue string, requestID string) *models.SQLGenerateResponse {
+	if h.llmClient == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	hint, err := h.llmClient.GenerateGuidance(ctx, req.Query, schemaContext, issue)
+	if err != nil {
+		h.logger.Warn("Failed to get guidance", zap.Error(err))
+		return nil
+	}
+	return &models.SQLGenerateResponse{
+		SQL:        "",
+		Reasoning:  hint,
+		Source:     "assistant_hint",
+		RequestID:  requestID,
+		UsedMemory: false,
 	}
 }
 

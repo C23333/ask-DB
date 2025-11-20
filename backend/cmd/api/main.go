@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,6 +75,9 @@ func main() {
 	userService, err := auth.NewUserService(appDB, appDriver)
 	if err != nil {
 		log.Fatal("Failed to init user service", zap.Error(err))
+	}
+	if err := ensureDefaultAdmin(cfg, userService, log); err != nil {
+		log.Warn("Failed to ensure default admin", zap.Error(err))
 	}
 	memoryStore, err := memory.NewStore(appDB, appDriver)
 	if err != nil {
@@ -145,4 +149,24 @@ func initAppDatabase(cfg *config.Config, log *zap.Logger) (*sql.DB, string, erro
 		zap.String("driver", driver))
 
 	return db, driver, nil
+}
+
+func ensureDefaultAdmin(cfg *config.Config, userService *auth.UserService, log *zap.Logger) error {
+	if userService == nil || cfg == nil {
+		return nil
+	}
+	username := strings.TrimSpace(cfg.DefaultAdminUsername)
+	password := strings.TrimSpace(cfg.DefaultAdminPassword)
+	if username == "" || password == "" {
+		return nil
+	}
+	email := cfg.DefaultAdminEmail
+	if strings.TrimSpace(email) == "" {
+		email = fmt.Sprintf("%s@admin.local", username)
+	}
+	if err := userService.EnsureAdminUser(username, email, password); err != nil {
+		return err
+	}
+	log.Info("Default admin ensured", zap.String("username", username))
+	return nil
 }

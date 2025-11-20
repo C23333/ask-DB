@@ -99,6 +99,13 @@ func SetupRoutes(
 		monitorGroup.GET("/stats", handler.GetMonitorStats)
 	}
 
+	adminGroup := protected.Group("/admin")
+	adminGroup.Use(AdminOnlyMiddleware())
+	{
+		adminGroup.GET("/users", handler.AdminListUsers)
+		adminGroup.GET("/usage", handler.AdminUserUsage)
+	}
+
 	ws := router.Group("/api/ws")
 	{
 		ws.GET("/sql", handler.SQLWebSocket)

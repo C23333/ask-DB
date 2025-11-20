@@ -115,6 +115,16 @@ func (c *LLMClient) GenerateSQLStream(
 	}, nil
 }
 
+// GenerateGuidance asks LLM to help users refine their query when SQL无法生成.
+func (c *LLMClient) GenerateGuidance(ctx context.Context, originalQuery, schemaContext, issue string) (string, error) {
+	prompt := c.buildGuidancePrompt(originalQuery, schemaContext, issue)
+	response, err := c.callLLMAPI(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(response), nil
+}
+
 // DebugSQL generates debugging suggestions for a failed SQL query
 func (c *LLMClient) DebugSQL(ctx context.Context, req *models.SQLDebugRequest, schemaContext string) (*models.SQLDebugResponse, error) {
 	// Build the debug prompt
@@ -146,6 +156,26 @@ func (c *LLMClient) callLLMAPI(ctx context.Context, prompt string) (string, erro
 		// Generic API call for custom/proxy services
 		return c.callGenericAPI(ctx, prompt)
 	}
+}
+
+func (c *LLMClient) buildGuidancePrompt(originalQuery, schemaContext, issue string) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是一名经验丰富的 BI 助手，需要帮助用户改进提问方式以便生成正确 SQL。\n")
+	builder.WriteString("## 用户当前提问\n")
+	builder.WriteString(originalQuery)
+	builder.WriteString("\n\n")
+	if strings.TrimSpace(schemaContext) != "" {
+		builder.WriteString("## 已知的数据库信息\n")
+		builder.WriteString(schemaContext)
+		builder.WriteString("\n\n")
+	}
+	if strings.TrimSpace(issue) != "" {
+		builder.WriteString("## LLM 或数据库反馈的限制/错误\n")
+		builder.WriteString(issue)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("请用中文向用户说明原因，并提供 2~3 条可执行的改进建议，例如提供需要的表字段、限定时间范围或换个表述方式。不要返回 SQL，只给出建议。")
+	return builder.String()
 }
 
 // callOpenAIAPI calls OpenAI API

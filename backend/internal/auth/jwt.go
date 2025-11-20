@@ -335,3 +335,106 @@ func (us *UserService) userExists(username, email string) (bool, error) {
 	}
 	return true, nil
 }
+
+// EnsureAdminUser creates or updates an admin account using the provided credentials.
+func (us *UserService) EnsureAdminUser(username, email, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil
+	}
+	existing, err := us.GetUserByUsername(username)
+	if err == nil && existing != nil {
+		needsUpdate := !strings.EqualFold(existing.Role, "admin")
+		hashed := existing.Password
+		if strings.TrimSpace(password) != "" {
+			hashed, err = us.passwordManager.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			needsUpdate = true
+		}
+		if !needsUpdate {
+			return nil
+		}
+		existing.Role = "admin"
+		existing.Password = hashed
+		existing.UpdatedAt = time.Now()
+		return us.updateUser(existing, strings.TrimSpace(password) != "")
+	}
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		return err
+	}
+
+	if strings.TrimSpace(email) == "" {
+		email = fmt.Sprintf("%s@admin.local", username)
+	}
+	hashedPassword, err := us.passwordManager.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	user := &models.User{
+		ID:        uuid.New().String(),
+		Username:  username,
+		Email:     email,
+		Password:  hashedPassword,
+		Role:      "admin",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	return us.insertUser(user)
+}
+
+// ListUsers returns all users without passwords.
+func (us *UserService) ListUsers() ([]models.User, error) {
+	query := `SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at ASC`
+	if us.driver == "oracle" {
+		query = `SELECT id, username, email, role, created_at, updated_at FROM USERS ORDER BY created_at ASC`
+	}
+	rows, err := us.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(&user.ID, &user.Username, &user.Email, &user.Role, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, nil
+}
+
+func (us *UserService) insertUser(user *models.User) error {
+	if us.driver == "oracle" {
+		_, err := us.db.Exec(`INSERT INTO USERS (ID, USERNAME, EMAIL, PASSWORD, ROLE, CREATED_AT, UPDATED_AT) VALUES (:1, :2, :3, :4, :5, :6, :7)`,
+			user.ID, user.Username, user.Email, user.Password, user.Role, user.CreatedAt, user.UpdatedAt)
+		return err
+	}
+	_, err := us.db.Exec(`INSERT INTO users (id, username, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Username, user.Email, user.Password, user.Role, user.CreatedAt, user.UpdatedAt)
+	return err
+}
+
+func (us *UserService) updateUser(user *models.User, includePassword bool) error {
+	if us.driver == "oracle" {
+		if includePassword {
+			_, err := us.db.Exec(`UPDATE USERS SET ROLE = :1, PASSWORD = :2, UPDATED_AT = :3 WHERE ID = :4`,
+				user.Role, user.Password, user.UpdatedAt, user.ID)
+			return err
+		}
+		_, err := us.db.Exec(`UPDATE USERS SET ROLE = :1, UPDATED_AT = :2 WHERE ID = :3`,
+			user.Role, user.UpdatedAt, user.ID)
+		return err
+	}
+	if includePassword {
+		_, err := us.db.Exec(`UPDATE users SET role = ?, password = ?, updated_at = ? WHERE id = ?`,
+			user.Role, user.Password, user.UpdatedAt, user.ID)
+		return err
+	}
+	_, err := us.db.Exec(`UPDATE users SET role = ?, updated_at = ? WHERE id = ?`,
+		user.Role, user.UpdatedAt, user.ID)
+	return err
+}

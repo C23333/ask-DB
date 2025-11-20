@@ -69,6 +69,17 @@ type Dashboard struct {
 	Recent  []Event      `json:"recent"`
 }
 
+// UserUsage aggregates metrics per user.
+type UserUsage struct {
+	UserID        string    `json:"user_id"`
+	TotalCalls    int       `json:"total_calls"`
+	SuccessCount  int       `json:"success_count"`
+	FailCount     int       `json:"fail_count"`
+	AvgDuration   float64   `json:"avg_duration_ms"`
+	TotalDuration int64     `json:"total_duration_ms"`
+	LastEventAt   time.Time `json:"last_event_at"`
+}
+
 // Monitor handles metric persistence and alerting.
 type Monitor struct {
 	db        *sql.DB
@@ -209,6 +220,50 @@ func (m *Monitor) QueryDashboard(from, to time.Time, bucketMinutes int) (*Dashbo
 		Trend:   trend,
 		Recent:  recent,
 	}, nil
+}
+
+// QueryUserUsage aggregates metrics grouped by user_id over a time range.
+func (m *Monitor) QueryUserUsage(from, to time.Time) ([]UserUsage, error) {
+	events, err := m.queryEvents(from, to)
+	if err != nil {
+		return nil, err
+	}
+	usageMap := make(map[string]*UserUsage)
+	for _, evt := range events {
+		userID, _ := evt.Extra["user_id"].(string)
+		if strings.TrimSpace(userID) == "" {
+			continue
+		}
+		current := usageMap[userID]
+		if current == nil {
+			current = &UserUsage{UserID: userID}
+			usageMap[userID] = current
+		}
+		current.TotalCalls++
+		if evt.Success {
+			current.SuccessCount++
+		} else {
+			current.FailCount++
+		}
+		current.TotalDuration += evt.Duration
+		if evt.CreatedAt.After(current.LastEventAt) {
+			current.LastEventAt = evt.CreatedAt
+		}
+	}
+	result := make([]UserUsage, 0, len(usageMap))
+	for _, usage := range usageMap {
+		if usage.TotalCalls > 0 {
+			usage.AvgDuration = float64(usage.TotalDuration) / float64(usage.TotalCalls)
+		}
+		result = append(result, *usage)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].TotalCalls == result[j].TotalCalls {
+			return result[i].UserID < result[j].UserID
+		}
+		return result[i].TotalCalls > result[j].TotalCalls
+	})
+	return result, nil
 }
 
 func (m *Monitor) queryEvents(from, to time.Time) ([]Event, error) {
