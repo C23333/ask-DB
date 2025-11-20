@@ -203,6 +203,8 @@
   padding: 10px 8px;
   text-align: left;
   border-bottom: 1px solid #f1f1f1;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .zen-table th {
@@ -384,6 +386,16 @@
   gap: 16px;
 }
 
+.chat-window {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .chat-log {
   background: #fff;
   border-radius: 16px;
@@ -437,6 +449,12 @@
 .chat-input__actions {
   display: flex;
   gap: 12px;
+}
+
+.chat-input--embedded {
+  border: 1px solid #f1f5f9;
+  box-shadow: none;
+  border-radius: 12px;
 }
 
 .chat-toolbar {
@@ -823,7 +841,9 @@
   position: absolute;
   top: 0;
   right: 0;
-  width: min(520px, 90vw);
+  width: 520px;
+  max-width: 90vw;
+  min-width: 400px;
   height: 100%;
   background: #fff;
   box-shadow: -20px 0 40px rgba(15, 23, 42, 0.25);
@@ -831,6 +851,8 @@
   flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.3s ease;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .exec-panel--open .exec-panel__body {
@@ -853,6 +875,8 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .exec-panel__actions {

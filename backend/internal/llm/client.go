@@ -360,7 +360,7 @@ func (c *LLMClient) callGenericAPI(ctx context.Context, prompt string) (string, 
 
 // buildSQLGenerationPrompt builds a prompt for SQL generation
 func (c *LLMClient) buildSQLGenerationPrompt(req *models.SQLGenerateRequest, schemaContext string, memoryContext string) string {
-	prompt := fmt.Sprintf(`You are an expert SQL developer. Based on the following database schema and user request, generate a valid Oracle SQL query.
+	prompt := fmt.Sprintf(`You are an expert SQL developer. Use the recent conversation memory to continue the thread (it may include errors from earlier attempts). Based on the following database schema and user request, generate a valid Oracle SQL query.
 
 DATABASE SCHEMA:
 %s
@@ -377,6 +377,7 @@ Please respond with ONLY the SQL query, without any explanation or markdown form
 3. Only reference tables and columns that exist in the schema
 4. Be optimized for performance
 
+When the latest user query is vague, infer intent from the conversation memory. If the schema genuinely lacks required tables, return a concise ERROR explaining the missing data source (in Chinese). If the user's request can be reformulated using context, propose the best-guess SQL instead of failing.
 If you cannot generate a valid query, respond with "ERROR: [reason]"`,
 		schemaContext,
 		formatMemoryContext(memoryContext),
@@ -475,7 +476,7 @@ func formatMemoryContext(memoryContext string) string {
 	if strings.TrimSpace(memoryContext) == "" {
 		return ""
 	}
-	return fmt.Sprintf("CONVERSATION MEMORY (previous user requests and SQL results):\n%s\n", memoryContext)
+	return fmt.Sprintf("CONVERSATION MEMORY (recent history, auto-compressed; use it to continue the thread even if the latest user query is brief):\n%s\n", memoryContext)
 }
 
 func (c *LLMClient) supportsStreaming() bool {

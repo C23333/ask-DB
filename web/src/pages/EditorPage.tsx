@@ -50,10 +50,13 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminUsage, setAdminUsage] = useState<UserUsage[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
+  const [adminUsagePage, setAdminUsagePage] = useState(1);
+  const [adminUsagePageSize, setAdminUsagePageSize] = useState(10);
   const wsRef = useRef<WebSocket | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const isAdmin = Boolean(user?.role && user.role.toLowerCase() === 'admin');
+  const STREAMING_PLACEHOLDER = 'LLM 正在生成 SQL...';
 
   useEffect(() => {
     const init = async () => {
@@ -165,7 +168,17 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
           }
         : undefined;
       const data = await apiClient.getChatMessages(sessionId, params);
-      setMessages(data || []);
+      setMessages((prev) => {
+        const base = data || [];
+        const streamingId = streamingMessageIdRef.current;
+        if (streamingId) {
+          const streamingMsg = prev.find((msg) => msg.id === streamingId);
+          if (streamingMsg) {
+            return [...base, streamingMsg];
+          }
+        }
+        return base;
+      });
     } catch (err) {
       console.warn('Failed to load chat messages', err);
     }
@@ -235,6 +248,46 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     return message.id;
   };
 
+  const ensureAssistantStreamingMessage = (initialContent = STREAMING_PLACEHOLDER) => {
+    if (streamingMessageIdRef.current) {
+      return streamingMessageIdRef.current;
+    }
+    const id = crypto.randomUUID();
+    streamingMessageIdRef.current = id;
+    const message: ChatMessage = {
+      id,
+      user_id: user?.id || 'assistant',
+      session_id: activeSession,
+      role: 'assistant',
+      content: initialContent,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, message]);
+    return id;
+  };
+
+  const updateAssistantStreamingMessage = (nextContent: string, append = false) => {
+    const id = streamingMessageIdRef.current || ensureAssistantStreamingMessage('');
+    if (!id) return;
+    setMessages((prev) =>
+      prev.map((msg) => {
+        if (msg.id !== id) return msg;
+        const base =
+          append && (msg.content === '' || msg.content === STREAMING_PLACEHOLDER)
+            ? ''
+            : msg.content;
+        return {
+          ...msg,
+          content: append ? base + nextContent : nextContent,
+        };
+      })
+    );
+  };
+
+  const clearAssistantStreamingMessage = () => {
+    streamingMessageIdRef.current = null;
+  };
+
   const handleGenerateSQL = async () => {
     const trimmed = query.trim();
     if (!trimmed) return;
@@ -246,6 +299,7 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     setQuery('');
     setLoading(true);
     setIsStreaming(true);
+    ensureAssistantStreamingMessage();
     const initialLog = `[${new Date().toLocaleTimeString()}] 等待服务器响应...`;
     setProgressLogs([initialLog]);
     setPendingStage('等待服务器响应');
@@ -259,53 +313,16 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
           request_id: requestId,
         },
         {
-          onProgress: (stage, message) => appendProgressLog(stageLabel(stage), message),
-          onChunk: (chunk) => {
-            setMessages((prev) => {
-              let msgId = streamingMessageIdRef.current;
-              if (!msgId) {
-                msgId = crypto.randomUUID();
-                streamingMessageIdRef.current = msgId;
-                return [
-                  ...prev,
-                  {
-                    id: msgId,
-                    user_id: user?.id || 'assistant',
-                    session_id: activeSession,
-                    role: 'assistant',
-                    content: chunk,
-                    created_at: new Date().toISOString(),
-                  },
-                ];
-              }
-              return prev.map((msg) =>
-                msg.id === msgId ? { ...msg, content: msg.content + chunk } : msg
-              );
-            });
+          onProgress: (stage, message) => {
+            appendProgressLog(stageLabel(stage), message);
+            ensureAssistantStreamingMessage();
           },
-          onComplete: (payload) => {
+          onChunk: (chunk) => {
+            updateAssistantStreamingMessage(chunk, true);
+          },
+          onComplete: async (payload) => {
             const finalText = `${payload.sql}\n\n说明:\n${payload.reasoning || ''}`;
-            setMessages((prev) => {
-              let msgId = streamingMessageIdRef.current;
-              if (!msgId) {
-                msgId = crypto.randomUUID();
-                streamingMessageIdRef.current = msgId;
-                return [
-                  ...prev,
-                  {
-                    id: msgId,
-                    user_id: user?.id || 'assistant',
-                    session_id: activeSession,
-                    role: 'assistant',
-                    content: finalText,
-                    created_at: new Date().toISOString(),
-                  },
-                ];
-              }
-              return prev.map((msg) =>
-                msg.id === msgId ? { ...msg, content: finalText } : msg
-              );
-            });
+            updateAssistantStreamingMessage(finalText, false);
             setSQL(payload.sql);
             setReasoning(payload.reasoning || '');
             setExecutePage(1);
@@ -314,31 +331,38 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
             setLoading(false);
             setPendingStage('');
             setProgressLogs([]);
-            streamingMessageIdRef.current = null;
+            clearAssistantStreamingMessage();
             setExecPanelOpen(true);
             loadChatSessions();
             loadHistory();
+            loadChatMessages(activeSession);
           },
           onError: (msg) => {
             setError(msg);
+            updateAssistantStreamingMessage(`生成失败：${msg}`, false);
             setIsStreaming(false);
             setLoading(false);
             setPendingStage('');
             setProgressLogs([]);
-            streamingMessageIdRef.current = null;
+            clearAssistantStreamingMessage();
+            loadChatMessages(activeSession);
           },
           onClose: () => {
             setIsStreaming(false);
             setPendingStage('');
+            clearAssistantStreamingMessage();
           },
         }
       );
       wsRef.current = ws;
     } catch (err: any) {
-      setError(err?.message || '生成失败');
+      const message = err?.message || '生成失败';
+      setError(message);
+      updateAssistantStreamingMessage(`生成失败：${message}`, false);
       setIsStreaming(false);
       setLoading(false);
       setPendingStage('');
+      clearAssistantStreamingMessage();
     }
   };
 
@@ -376,6 +400,15 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     e.preventDefault();
     if (!isStreaming) {
       handleGenerateSQL();
+    }
+  };
+
+  const handleQueryKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      if (!isStreaming) {
+        handleGenerateSQL();
+      }
     }
   };
 
@@ -848,56 +881,61 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
             )}
           </div>
 
-          {(isStreaming || progressLogs.length > 0) && (
-            <div className="chat-progress">
-              <div className="chat-progress__indicator">
-                <span className="chat-progress__dot" />
-                <strong>{pendingStage || '正在生成 SQL...'}</strong>
-              </div>
-              <div className="chat-progress__log">
-                {progressLogs.map((log, idx) => (
-                  <div key={idx}>{log}</div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="chat-log" ref={chatLogRef}>
-            {messages.length === 0 && <p className="zen-note">暂无历史记录，试着提问 “最近30天门店...”</p>}
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`chat-message chat-message--${msg.role === 'user' ? 'user' : 'assistant'}`}
-              >
-                <div className="chat-message__role">
-                  {msg.role === 'user' ? '我' : 'DB 助理'} · {new Date(msg.created_at).toLocaleTimeString()}
+          <div className="chat-window">
+            <div className="chat-log" ref={chatLogRef}>
+              {messages.length === 0 && (
+                <p className="zen-note">暂无历史记录，试着提问 “最近30天门店...”</p>
+              )}
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`chat-message chat-message--${msg.role === 'user' ? 'user' : 'assistant'}`}
+                >
+                  <div className="chat-message__role">
+                    {msg.role === 'user' ? '我' : 'DB 助理'} · {new Date(msg.created_at).toLocaleTimeString()}
+                  </div>
+                  <pre className="chat-message__content">{msg.content}</pre>
                 </div>
-                <pre className="chat-message__content">{msg.content}</pre>
-              </div>
-            ))}
-          </div>
-
-          <form className="chat-input" onSubmit={handleQuerySubmit}>
-            <textarea
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="向数据库提问，例如：列出最近30天新增门店..."
-              rows={3}
-            />
-            <div className="chat-input__actions">
-              <button type="submit" className="zen-btn" disabled={!query.trim() || loading || isStreaming}>
-                {loading || isStreaming ? '生成中...' : '发送'}
-              </button>
-              <button
-                type="button"
-                className="zen-btn zen-btn-secondary"
-                onClick={() => setQuery('')}
-                disabled={loading || isStreaming}
-              >
-                清空
-              </button>
+              ))}
             </div>
-          </form>
+
+            {(isStreaming || progressLogs.length > 0) && (
+              <div className="chat-progress">
+                <div className="chat-progress__indicator">
+                  <span className="chat-progress__dot" />
+                  <strong>{pendingStage || '正在生成 SQL...'}</strong>
+                </div>
+                <div className="chat-progress__log">
+                  {progressLogs.map((log, idx) => (
+                    <div key={idx}>{log}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <form className="chat-input chat-input--embedded" onSubmit={handleQuerySubmit}>
+              <textarea
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="向数据库提问，例如：列出最近30天新增门店..."
+                onKeyDown={handleQueryKeyDown}
+                rows={3}
+              />
+              <div className="chat-input__actions">
+                <button type="submit" className="zen-btn" disabled={!query.trim() || loading || isStreaming}>
+                  {loading || isStreaming ? '生成中...' : '发送 (Ctrl+Enter)'}
+                </button>
+                <button
+                  type="button"
+                  className="zen-btn zen-btn-secondary"
+                  onClick={() => setQuery('')}
+                  disabled={loading || isStreaming}
+                >
+                  清空
+                </button>
+              </div>
+            </form>
+          </div>
 
           {error && <div className="zen-error">{error}</div>}
 
@@ -1236,8 +1274,8 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
           </div>
         </div>
       </div>
-      <button className="exec-fab" onClick={() => setExecPanelOpen(true)}>
-        {loading ? '执行中…' : 'SQL 面板'}
+      <button className="exec-fab" onClick={() => setExecPanelOpen((prev) => !prev)}>
+        {execPanelOpen ? '关闭面板' : loading ? '执行中…' : 'SQL 面板'}
       </button>
     </div>
   );

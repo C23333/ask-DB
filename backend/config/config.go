@@ -56,6 +56,10 @@ type Config struct {
 	SQLMaxPageSize     int
 	SensitiveColumns   []string
 
+	// Schema filtering
+	SchemaExcludeTables   []string
+	SchemaExcludePrefixes []string
+
 	// Redis (Optional, for caching)
 	RedisHost     string
 	RedisPort     int
@@ -118,15 +122,17 @@ func LoadConfig() *Config {
 		DefaultAdminEmail:    strings.TrimSpace(getEnv("ADMIN_EMAIL", "")),
 
 		// LLM Configuration
-		LLMProvider:        strings.ToLower(strings.TrimSpace(getEnv("LLM_PROVIDER", "openai"))),
-		LLMAPIKey:          getEnv("LLM_API_KEY", ""),
-		LLMModel:           getEnv("LLM_MODEL", "gpt-3.5-turbo"),
-		LLMBaseURL:         getEnv("LLM_BASE_URL", "https://api.openai.com/v1"), // Can override for proxy
-		LLMTimeout:         getEnvInt("LLM_TIMEOUT", 120),
-		SQLGenerateTimeout: getEnvInt("SQL_GENERATE_TIMEOUT", 120),
-		SQLDefaultPageSize: getEnvInt("SQL_DEFAULT_PAGE_SIZE", 50),
-		SQLMaxPageSize:     getEnvInt("SQL_MAX_PAGE_SIZE", 200),
-		SensitiveColumns:   splitAndTrim(getEnv("SENSITIVE_COLUMNS", "")),
+		LLMProvider:           strings.ToLower(strings.TrimSpace(getEnv("LLM_PROVIDER", "openai"))),
+		LLMAPIKey:             getEnv("LLM_API_KEY", ""),
+		LLMModel:              getEnv("LLM_MODEL", "gpt-3.5-turbo"),
+		LLMBaseURL:            getEnv("LLM_BASE_URL", "https://api.openai.com/v1"), // Can override for proxy
+		LLMTimeout:            getEnvInt("LLM_TIMEOUT", 120),
+		SQLGenerateTimeout:    getEnvInt("SQL_GENERATE_TIMEOUT", 120),
+		SQLDefaultPageSize:    getEnvInt("SQL_DEFAULT_PAGE_SIZE", 50),
+		SQLMaxPageSize:        getEnvInt("SQL_MAX_PAGE_SIZE", 200),
+		SensitiveColumns:      splitAndTrim(getEnv("SENSITIVE_COLUMNS", "")),
+		SchemaExcludeTables:   splitAndTrim(getEnv("SCHEMA_EXCLUDE_TABLES", "")),
+		SchemaExcludePrefixes: getEnvListWithDefault("SCHEMA_EXCLUDE_PREFIXES", []string{"sys_", "jeecg_", "act_", "qrtz_", "onl_", "log_"}),
 
 		// Redis
 		RedisHost:     getEnv("REDIS_HOST", "localhost"),

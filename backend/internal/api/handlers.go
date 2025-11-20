@@ -43,6 +43,8 @@ type APIHandler struct {
 	progressStore   *progress.Store
 	generateTimeout time.Duration
 	cfg             *config.Config
+	excludeTables   map[string]struct{}
+	excludePrefixes []string
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -99,6 +101,8 @@ func NewAPIHandler(
 		generateTimeout: timeout * time.Second,
 		cfg:             cfg,
 		logger:          logger,
+		excludeTables:   buildExcludeTableMap(cfg),
+		excludePrefixes: buildExcludePrefixes(cfg),
 	}
 }
 
@@ -258,7 +262,8 @@ func (h *APIHandler) GenerateSQL(c *gin.Context) {
 
 	var memEntries []memory.Entry
 	if h.memoryStore != nil {
-		memEntries = h.memoryStore.GetRecent(userID, sessionID, 5)
+		// 多取一些历史以便上下文更完整，但后续会自动压缩
+		memEntries = h.memoryStore.GetRecent(userID, sessionID, 12)
 	}
 	memoryContext := buildMemoryContext(memEntries)
 	if len(memEntries) > 0 {
@@ -1321,6 +1326,7 @@ func (h *APIHandler) getDatabaseSchemaContext(ctx context.Context, tableNames st
 	h.logger.Info("Schema context build started", zap.String("table_filter", tableNames))
 
 	var targetTables []string
+	hasCustomTables := strings.TrimSpace(tableNames) != ""
 	if trimmed := strings.TrimSpace(tableNames); trimmed != "" {
 		for _, name := range strings.Split(trimmed, ",") {
 			name = strings.TrimSpace(name)
@@ -1335,6 +1341,9 @@ func (h *APIHandler) getDatabaseSchemaContext(ctx context.Context, tableNames st
 		if err != nil {
 			h.logger.Error("Schema context failed: list tables", zap.Error(err))
 			return "", err
+		}
+		if !hasCustomTables {
+			tables = h.filterSystemTables(tables)
 		}
 		targetTables = tables
 	}
@@ -1358,6 +1367,9 @@ func (h *APIHandler) getDatabaseSchemaContext(ctx context.Context, tableNames st
 		if ctx.Err() != nil {
 			h.logger.Warn("Schema context cancelled", zap.Error(ctx.Err()))
 			break
+		}
+		if !hasCustomTables && h.isExcludedTable(table) {
+			continue
 		}
 
 		if attemptCount >= maxAttempts && successCount > 0 {
@@ -1446,18 +1458,140 @@ func (h *APIHandler) logAuditTrail(userID, action, sql string, success bool, err
 	)
 }
 
+func buildExcludeTableMap(cfg *config.Config) map[string]struct{} {
+	result := make(map[string]struct{})
+	defaults := []string{
+		"BPMN_APPROVAL_ERROR_LOG",
+		"SYS_USER",
+		"SYS_ROLE",
+		"SYS_USER_ROLE",
+		"SYS_PERMISSION",
+		"SYS_DICT",
+		"SYS_DICT_ITEM",
+		"SYS_CATEGORY",
+		"SYS_GATEWAY",
+		"SYS_THIRDAPP_CONFIG",
+	}
+	for _, name := range defaults {
+		result[name] = struct{}{}
+	}
+	if cfg != nil {
+		for _, tbl := range cfg.SchemaExcludeTables {
+			if norm := normalizeTableName(tbl); norm != "" {
+				result[norm] = struct{}{}
+			}
+		}
+	}
+	return result
+}
+
+func buildExcludePrefixes(cfg *config.Config) []string {
+	var prefixes []string
+	source := []string{}
+	if cfg != nil {
+		source = cfg.SchemaExcludePrefixes
+	}
+	for _, item := range source {
+		if norm := normalizeTableName(item); norm != "" {
+			prefixes = append(prefixes, norm)
+		}
+	}
+	if len(prefixes) == 0 {
+		prefixes = []string{"SYS_", "JEECG_", "ACT_", "QRTZ_", "LOG_", "ONL_"}
+	}
+	return prefixes
+}
+
+func normalizeTableName(name string) string {
+	return strings.ToUpper(strings.TrimSpace(name))
+}
+
+func (h *APIHandler) isExcludedTable(table string) bool {
+	if h == nil {
+		return false
+	}
+	name := normalizeTableName(table)
+	if name == "" {
+		return false
+	}
+	if _, ok := h.excludeTables[name]; ok {
+		return true
+	}
+	for _, prefix := range h.excludePrefixes {
+		if prefix != "" && strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *APIHandler) filterSystemTables(tables []string) []string {
+	if h == nil {
+		return tables
+	}
+	var filtered []string
+	for _, tbl := range tables {
+		if h.isExcludedTable(tbl) {
+			continue
+		}
+		filtered = append(filtered, tbl)
+	}
+	return filtered
+}
+
+const (
+	maxMemoryContextChars       = 9600
+	maxMemoryQueryChars         = 400
+	maxMemorySQLChars           = 1200
+	maxMemoryReasoningChars     = 600
+	minVerboseMemoryEntriesKeep = 3
+)
+
 func buildMemoryContext(entries []memory.Entry) string {
 	if len(entries) == 0 {
 		return ""
 	}
-	var builder strings.Builder
+	blocks := make([]string, 0, len(entries))
 	for idx, entry := range entries {
-		builder.WriteString(fmt.Sprintf("%d) USER: %s\n", idx+1, entry.Query))
-		builder.WriteString("   SQL: ")
-		builder.WriteString(entry.SQL)
-		builder.WriteString("\n")
+		block := fmt.Sprintf(
+			"%d) USER: %s\n   SQL: %s",
+			idx+1,
+			truncateForMemory(entry.Query, maxMemoryQueryChars),
+			truncateForMemory(entry.SQL, maxMemorySQLChars),
+		)
+		if entry.Reasoning != "" {
+			block += "\n   REASONING: " + truncateForMemory(entry.Reasoning, maxMemoryReasoningChars)
+		}
+		blocks = append(blocks, block)
 	}
-	return builder.String()
+
+	contextText := strings.Join(blocks, "\n")
+	if len(contextText) <= maxMemoryContextChars {
+		return contextText
+	}
+
+	keep := minVerboseMemoryEntriesKeep
+	if keep > len(blocks) {
+		keep = len(blocks)
+	}
+	compressedCount := len(blocks) - keep
+	var summaryParts []string
+	for i := 0; i < compressedCount; i++ {
+		summaryParts = append(summaryParts, fmt.Sprintf(
+			"[%d] %s -> %s",
+			i+1,
+			truncateForMemory(entries[i].Query, 80),
+			truncateForMemory(entries[i].SQL, 120),
+		))
+	}
+	var compact []string
+	compact = append(compact, fmt.Sprintf("已压缩的历史（共 %d 条）：%s", compressedCount, strings.Join(summaryParts, " | ")))
+	compact = append(compact, blocks[len(blocks)-keep:]...)
+	compactText := strings.Join(compact, "\n")
+	if len(compactText) > maxMemoryContextChars {
+		return truncateForMemory(compactText, maxMemoryContextChars)
+	}
+	return compactText
 }
 
 func (h *APIHandler) appendMemory(userID, sessionID, query string, resp *models.SQLGenerateResponse) {
@@ -1521,6 +1655,18 @@ func (h *APIHandler) failProgress(requestID, errMsg string) {
 	h.progressStore.Fail(requestID, errMsg)
 }
 
+func truncateForMemory(text string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "..."
+}
+
 func (h *APIHandler) handleWebSocketGeneration(conn *websocket.Conn, userID string, req *models.SQLGenerateRequest) {
 	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
@@ -1568,7 +1714,7 @@ func (h *APIHandler) handleWebSocketGeneration(conn *websocket.Conn, userID stri
 
 	var memEntries []memory.Entry
 	if h.memoryStore != nil {
-		memEntries = h.memoryStore.GetRecent(userID, sessionID, 5)
+		memEntries = h.memoryStore.GetRecent(userID, sessionID, 12)
 	}
 	memoryContext := buildMemoryContext(memEntries)
 	if len(memEntries) > 0 {
