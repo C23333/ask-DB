@@ -8,6 +8,8 @@ import {
   SQLExecuteResponse,
   SQLHistoryRecord,
   TemplateInfo,
+  AdminUser,
+  UserUsage,
 } from '../services/api';
 import apiClient from '../services/api';
 import './EditorPage.css';
@@ -40,13 +42,18 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
   );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [progressModalOpen, setProgressModalOpen] = useState(false);
   const [progressLogs, setProgressLogs] = useState<string[]>([]);
   const [chatKeyword, setChatKeyword] = useState('');
   const [monitorOverview, setMonitorOverview] = useState<MonitorDashboard | null>(null);
+  const [pendingStage, setPendingStage] = useState('');
+  const [execPanelOpen, setExecPanelOpen] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [adminUsage, setAdminUsage] = useState<UserUsage[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const isAdmin = Boolean(user?.role && user.role.toLowerCase() === 'admin');
 
   useEffect(() => {
     const init = async () => {
@@ -92,6 +99,12 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (isAdmin) {
+      loadAdminInsights();
+    }
+  }, [isAdmin]);
+
   const stageLabel = (stage: string) => {
     const map: Record<string, string> = {
       received: '已接收请求',
@@ -123,7 +136,8 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
 
   const appendProgressLog = (stage: string, message: string) => {
     const entry = `[${new Date().toLocaleTimeString()}] ${stage} - ${message}`;
-    setProgressLogs((prev) => [...prev, entry]);
+    setProgressLogs((prev) => [...prev.slice(-4), entry]);
+    setPendingStage(stage);
   };
 
   const loadChatSessions = async () => {
@@ -184,6 +198,23 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     }
   };
 
+  const loadAdminInsights = async () => {
+    if (!isAdmin) return;
+    setAdminLoading(true);
+    try {
+      const [users, usage] = await Promise.all([
+        apiClient.getAdminUsers(),
+        apiClient.getAdminUsage(),
+      ]);
+      setAdminUsers(users || []);
+      setAdminUsage(usage || []);
+    } catch (err) {
+      console.warn('Failed to load admin data', err);
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
   const scrollToBottom = () => {
     if (chatLogRef.current) {
       chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
@@ -215,8 +246,9 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     setQuery('');
     setLoading(true);
     setIsStreaming(true);
-    setProgressModalOpen(true);
-    setProgressLogs([`[${new Date().toLocaleTimeString()}] 等待服务器响应...`]);
+    const initialLog = `[${new Date().toLocaleTimeString()}] 等待服务器响应...`;
+    setProgressLogs([initialLog]);
+    setPendingStage('等待服务器响应');
 
     const requestId = crypto.randomUUID();
     try {
@@ -278,23 +310,26 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
             setReasoning(payload.reasoning || '');
             setExecutePage(1);
             setResult(null);
-            setProgressModalOpen(false);
             setIsStreaming(false);
             setLoading(false);
+            setPendingStage('');
+            setProgressLogs([]);
             streamingMessageIdRef.current = null;
+            setExecPanelOpen(true);
             loadChatSessions();
             loadHistory();
           },
           onError: (msg) => {
             setError(msg);
-            setProgressModalOpen(false);
             setIsStreaming(false);
             setLoading(false);
+            setPendingStage('');
+            setProgressLogs([]);
             streamingMessageIdRef.current = null;
           },
           onClose: () => {
             setIsStreaming(false);
-            setProgressModalOpen(false);
+            setPendingStage('');
           },
         }
       );
@@ -303,7 +338,7 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
       setError(err?.message || '生成失败');
       setIsStreaming(false);
       setLoading(false);
-      setProgressModalOpen(false);
+      setPendingStage('');
     }
   };
 
@@ -328,7 +363,12 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
   };
 
   const handleExecuteSQL = async () => {
+    if (!sql.trim()) {
+      setError('当前没有可执行的 SQL');
+      return;
+    }
     setExecutePage(1);
+    setExecPanelOpen(true);
     await executeSQLWithPagination(1, executePageSize);
   };
 
@@ -365,6 +405,15 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
       loadHistory();
     } catch (err: any) {
       setError(err?.response?.data?.message || '保存失败');
+    }
+  };
+
+  const handleCopySQL = () => {
+    if (!sql.trim()) return;
+    try {
+      navigator.clipboard.writeText(sql);
+    } catch (err) {
+      console.warn('clipboard unsupported', err);
     }
   };
 
@@ -417,6 +466,15 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     } catch (err: any) {
       setError(err?.response?.data?.message || '保存模版失败');
     }
+  };
+
+  const handleAdminUsagePageChange = (direction: number) => {
+    setAdminUsagePage((prev) => Math.max(1, prev + direction));
+  };
+
+  const handleAdminUsagePageSizeChange = (size: number) => {
+    setAdminUsagePageSize(size);
+    setAdminUsagePage(1);
   };
 
   const handleEditTemplate = async (tpl: TemplateInfo) => {
@@ -541,6 +599,17 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
     };
   }, [monitorTrend]);
 
+  const paginatedAdminUsage = useMemo(() => {
+    const totalPages = Math.max(1, Math.ceil(adminUsage.length / adminUsagePageSize));
+    const safePage = Math.min(adminUsagePage, totalPages);
+    const start = (safePage - 1) * adminUsagePageSize;
+    return {
+      rows: adminUsage.slice(start, start + adminUsagePageSize),
+      totalPages,
+      currentPage: safePage,
+    };
+  }, [adminUsage, adminUsagePage, adminUsagePageSize]);
+
   return (
     <div className="chat-shell">
       <header className="zen-header">
@@ -551,6 +620,12 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
         <div className="zen-header-meta">
           {dbInfo?.database_version && <span className="zen-chip">{dbInfo.database_version}</span>}
           {dbInfo?.current_user && <span className="zen-chip">Schema: {dbInfo.current_user}</span>}
+          {user?.role && (
+            <span className="zen-chip">{user.role.toLowerCase() === 'admin' ? '管理员' : '普通用户'}</span>
+          )}
+          <button className="zen-btn zen-btn-secondary zen-btn-ghost" onClick={() => setExecPanelOpen(true)}>
+            SQL 执行面板
+          </button>
           <div className="zen-user-info">
             <span>{user?.username || '未登录'}</span>
             <button className="zen-link" onClick={() => onLogout?.()}>
@@ -765,7 +840,27 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
             >
               导出
             </button>
+            {pendingStage && (
+              <span className="chat-status-pill">
+                <span className="chat-progress__dot" />
+                {pendingStage}
+              </span>
+            )}
           </div>
+
+          {(isStreaming || progressLogs.length > 0) && (
+            <div className="chat-progress">
+              <div className="chat-progress__indicator">
+                <span className="chat-progress__dot" />
+                <strong>{pendingStage || '正在生成 SQL...'}</strong>
+              </div>
+              <div className="chat-progress__log">
+                {progressLogs.map((log, idx) => (
+                  <div key={idx}>{log}</div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="chat-log" ref={chatLogRef}>
             {messages.length === 0 && <p className="zen-note">暂无历史记录，试着提问 “最近30天门店...”</p>}
@@ -806,115 +901,25 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
 
           {error && <div className="zen-error">{error}</div>}
 
-          <section className="zen-section">
-            <div className="zen-section-title">
-              <h2>SQL 草稿</h2>
-              {reasoning && <p className="zen-note">{reasoning}</p>}
-            </div>
-            <textarea
-              className="zen-textarea zen-textarea-sql"
-              value={sql}
-              onChange={(e) => setSQL(e.target.value)}
-              rows={10}
-            />
-            <div className="zen-actions">
-              <button className="zen-btn" onClick={handleExecuteSQL} disabled={!sql.trim() || loading}>
-                执行 SQL
-              </button>
-              <button className="zen-btn zen-btn-secondary" onClick={handleSaveReport}>
-                保存报表
-              </button>
-              <button className="zen-btn zen-btn-secondary" onClick={handleSaveTemplateFromSQL}>
-                保存为模版
-              </button>
-            </div>
-          </section>
-
-          {result && (
-            <section className="zen-section">
-              <div className="zen-section-title">
-                <h2>查询结果</h2>
-                {result.success && (
-                  <span className="zen-chip">
-                    本页 {result.row_count} 行 · {result.exec_time_ms}ms
-                  </span>
-                )}
-              </div>
-              {result.success && (
-                <div className="pagination-bar">
-                  <div className="pagination-info">
-                    <span>
-                      第 {currentResultPage} 页 · 每页 {currentPageSize} 行
-                    </span>
-                    {maskedColumns.length > 0 && (
-                      <span className="masked-note">敏感列已脱敏：{maskedColumns.join(', ')}</span>
-                    )}
-                  </div>
-                  <div className="pagination-actions">
-                    <label>每页</label>
-                    <select
-                      value={currentPageSize}
-                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                      disabled={loading}
-                    >
-                      {[20, 50, 100, 200].map((size) => (
-                        <option key={size} value={size}>
-                          {size}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="zen-btn zen-btn-secondary"
-                      onClick={() => handlePageChange(-1)}
-                      disabled={loading || currentResultPage <= 1}
-                    >
-                      上一页
-                    </button>
-                    <button
-                      type="button"
-                      className="zen-btn zen-btn-secondary"
-                      onClick={handleRefreshPage}
-                      disabled={loading}
-                    >
-                      刷新
-                    </button>
-                    <button
-                      type="button"
-                      className="zen-btn zen-btn-secondary"
-                      onClick={() => handlePageChange(1)}
-                      disabled={loading || !currentHasMore}
-                    >
-                      下一页
-                    </button>
-                  </div>
+          {sql.trim() && (
+            <div className="sql-preview">
+              <div className="sql-preview__header">
+                <h3>最新 SQL 草稿</h3>
+                <div className="sql-preview__actions">
+                  <button className="zen-btn zen-btn-secondary" type="button" onClick={handleCopySQL}>
+                    复制
+                  </button>
+                  <button className="zen-btn zen-btn-secondary" type="button" onClick={() => setExecPanelOpen(true)}>
+                    打开执行面板
+                  </button>
+                  <button className="zen-btn" type="button" onClick={handleExecuteSQL}>
+                    立即执行
+                  </button>
                 </div>
-              )}
-              <div className="zen-result">
-                {result.success ? (
-                  <table className="zen-table">
-                    <thead>
-                      <tr>
-                        {columns.map((col) => (
-                          <th key={col}>{col}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row, idx) => (
-                        <tr key={idx}>
-                          {columns.map((col, j) => (
-                            <td key={col + j}>{row[j] !== undefined ? String(row[j]) : ''}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="zen-error">{result.error || '执行失败'}</div>
-                )}
               </div>
-            </section>
+              {reasoning && <p className="zen-note">{reasoning}</p>}
+              <pre>{sql}</pre>
+            </div>
           )}
 
           <section className="zen-section">
@@ -982,22 +987,258 @@ export const EditorPage: React.FC<EditorPageProps> = ({ onLogout }) => {
               </ul>
             )}
           </section>
+
+          {isAdmin && (
+            <section className="zen-section admin-panel">
+              <div className="admin-panel__header">
+                <div>
+                  <h2>管理员视角</h2>
+                  <p className="zen-note">查看全局用户与调用消耗</p>
+                </div>
+                <button
+                  type="button"
+                  className="zen-btn zen-btn-secondary"
+                  onClick={loadAdminInsights}
+                  disabled={adminLoading}
+                >
+                  {adminLoading ? '加载中...' : '刷新'}
+                </button>
+              </div>
+              <div className="admin-panel__grid">
+                <div className="admin-table">
+                  <header>
+                    <h3>系统用户</h3>
+                    <span>{adminUsers.length} 人</span>
+                  </header>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>用户名</th>
+                        <th>邮箱</th>
+                        <th>角色</th>
+                        <th>加入时间</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsers.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="zen-note">
+                            暂无数据
+                          </td>
+                        </tr>
+                      )}
+                      {adminUsers.map((usr) => (
+                        <tr key={usr.id}>
+                          <td>{usr.username}</td>
+                          <td>{usr.email}</td>
+                          <td>{usr.role}</td>
+                          <td>{new Date(usr.created_at).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="admin-table">
+                  <header>
+                    <h3>调用统计（24h）</h3>
+                    <span>
+                      {adminUsage.length} 人 · 第 {paginatedAdminUsage.currentPage}/
+                      {paginatedAdminUsage.totalPages} 页
+                    </span>
+                  </header>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>用户</th>
+                        <th>调用次数</th>
+                        <th>成功率</th>
+                        <th>最后时间</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedAdminUsage.rows.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="zen-note">
+                            暂无统计
+                          </td>
+                        </tr>
+                      )}
+                      {paginatedAdminUsage.rows.map((item) => {
+                        const rate =
+                          item.total_calls > 0
+                            ? ((item.success_count / item.total_calls) * 100).toFixed(1)
+                            : '0.0';
+                        return (
+                          <tr key={item.user_id}>
+                            <td>{item.user_id}</td>
+                            <td>{item.total_calls}</td>
+                            <td>{rate}%</td>
+                            <td>{new Date(item.last_event_at).toLocaleString()}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div className="admin-table__pagination">
+                    <div className="admin-table__page-size">
+                      <label>每页</label>
+                      <select
+                        value={adminUsagePageSize}
+                        onChange={(e) => handleAdminUsagePageSizeChange(Number(e.target.value))}
+                      >
+                        {[5, 10, 20].map((size) => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="admin-table__page-actions">
+                      <button
+                        type="button"
+                        className="zen-btn zen-btn-secondary"
+                        onClick={() => handleAdminUsagePageChange(-1)}
+                        disabled={paginatedAdminUsage.currentPage <= 1}
+                      >
+                        上一页
+                      </button>
+                      <button
+                        type="button"
+                        className="zen-btn zen-btn-secondary"
+                        onClick={() => handleAdminUsagePageChange(1)}
+                        disabled={paginatedAdminUsage.currentPage >= paginatedAdminUsage.totalPages}
+                      >
+                        下一页
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
         </main>
       </div>
-
-      {progressModalOpen && (
-        <div className="zen-modal">
-          <div className="zen-modal-content">
-            <div className="zen-spinner" />
-            <h3>正在生成 SQL</h3>
-            <div className="zen-progress-log">
-              {progressLogs.map((log, idx) => (
-                <div key={idx}>{log}</div>
-              ))}
+      <div className={`exec-panel ${execPanelOpen ? 'exec-panel--open' : ''}`}>
+        <div className="exec-panel__backdrop" onClick={() => setExecPanelOpen(false)} />
+        <div className="exec-panel__body">
+          <div className="exec-panel__header">
+            <div>
+              <h3>SQL 执行面板</h3>
+              <p>可在此编辑 SQL、执行并查看结果。</p>
+            </div>
+            <button className="zen-btn zen-btn-secondary" onClick={() => setExecPanelOpen(false)}>
+              关闭
+            </button>
+          </div>
+          <div className="exec-panel__content">
+            <textarea
+              className="zen-textarea zen-textarea-sql"
+              value={sql}
+              onChange={(e) => setSQL(e.target.value)}
+              placeholder="在此粘贴或编辑 SQL..."
+              rows={8}
+            />
+            <div className="exec-panel__actions">
+              <button className="zen-btn" onClick={handleExecuteSQL} disabled={!sql.trim() || loading}>
+                {loading ? '执行中...' : '执行 SQL'}
+              </button>
+              <button className="zen-btn zen-btn-secondary" onClick={handleSaveReport} disabled={!sql.trim()}>
+                保存报表
+              </button>
+              <button
+                className="zen-btn zen-btn-secondary"
+                onClick={handleSaveTemplateFromSQL}
+                disabled={!sql.trim()}
+              >
+                保存为模版
+              </button>
+            </div>
+            <div className="exec-panel__results">
+              {result ? (
+                result.success ? (
+                  <>
+                    <div className="pagination-bar">
+                      <div className="pagination-info">
+                        <span>
+                          本页 {result.row_count} 行 · 第 {currentResultPage} 页
+                        </span>
+                        {maskedColumns.length > 0 && (
+                          <span className="masked-note">敏感列：{maskedColumns.join(', ')}</span>
+                        )}
+                      </div>
+                      <div className="pagination-actions">
+                        <label>每页</label>
+                        <select
+                          value={currentPageSize}
+                          onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                          disabled={loading}
+                        >
+                          {[20, 50, 100, 200].map((size) => (
+                            <option key={size} value={size}>
+                              {size}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="zen-btn zen-btn-secondary"
+                          onClick={() => handlePageChange(-1)}
+                          disabled={loading || currentResultPage <= 1}
+                        >
+                          上一页
+                        </button>
+                        <button
+                          type="button"
+                          className="zen-btn zen-btn-secondary"
+                          onClick={handleRefreshPage}
+                          disabled={loading}
+                        >
+                          刷新
+                        </button>
+                        <button
+                          type="button"
+                          className="zen-btn zen-btn-secondary"
+                          onClick={() => handlePageChange(1)}
+                          disabled={loading || !currentHasMore}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    </div>
+                    <div className="zen-result">
+                      <table className="zen-table">
+                        <thead>
+                          <tr>
+                            {columns.map((col) => (
+                              <th key={col}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row, idx) => (
+                            <tr key={idx}>
+                              {columns.map((col, j) => (
+                                <td key={col + j}>{row[j] !== undefined ? String(row[j]) : ''}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="zen-error">{result.error || '执行失败'}</div>
+                )
+              ) : (
+                <p className="zen-note">执行结果将在此显示。</p>
+              )}
             </div>
           </div>
         </div>
-      )}
+      </div>
+      <button className="exec-fab" onClick={() => setExecPanelOpen(true)}>
+        {loading ? '执行中…' : 'SQL 面板'}
+      </button>
     </div>
   );
 };

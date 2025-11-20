@@ -14,6 +14,7 @@ interface LoginResponse {
     id: string;
     username: string;
     email: string;
+    role?: string;
   };
 }
 
@@ -185,6 +186,25 @@ interface MonitorDashboard {
   stats: MonitorStat[];
   trend: MonitorTrendPoint[];
   recent: MonitorEvent[];
+}
+
+interface AdminUser {
+  id: string;
+  username: string;
+  email: string;
+  role: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface UserUsage {
+  user_id: string;
+  total_calls: number;
+  success_count: number;
+  fail_count: number;
+  avg_duration_ms: number;
+  total_duration_ms: number;
+  last_event_at: string;
 }
 
 interface ChatMessageOptions {
@@ -430,6 +450,16 @@ class APIClient {
     const response = await this.client.get('/monitor/stats');
     return response.data.data;
   }
+
+  async getAdminUsers(): Promise<AdminUser[]> {
+    const response = await this.client.get('/admin/users');
+    return response.data.data || [];
+  }
+
+  async getAdminUsage(params?: { from?: string; to?: string }): Promise<UserUsage[]> {
+    const response = await this.client.get('/admin/usage', { params });
+    return response.data.data || [];
+  }
 }
 
 const apiClient = new APIClient();
@@ -456,4 +486,6 @@ export type {
   MonitorTrendPoint,
   MonitorEvent,
   MonitorDashboard,
+  AdminUser,
+  UserUsage,
 };
