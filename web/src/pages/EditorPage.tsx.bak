@@ -1,0 +1,302 @@
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import { useAuthStore } from '../stores/authStore';
+import { useSQLStore } from '../stores/sqlStore';
+import './EditorPage.css';
+
+export const EditorPage: React.FC = () => {
+  const { user, logout } = useAuthStore();
+  const {
+    sqlQuery,
+    setSQLQuery,
+    isExecuting,
+    executionResult,
+    executionError,
+    isGenerating,
+    generationError,
+    isDebugging,
+    debugSuggestions,
+    debugError,
+    history,
+    activeTab,
+    setActiveTab,
+    executeSQL,
+    generateSQL,
+    debugSQL,
+    saveSQL,
+    loadHistory,
+    clearResults,
+    clearError,
+  } = useSQLStore();
+
+  const [naturalQuery, setNaturalQuery] = useState('');
+  const [saveTitle, setSaveTitle] = useState('');
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const handleGenerateSQL = async () => {
+    await generateSQL(naturalQuery);
+  };
+
+  const handleExecuteSQL = async () => {
+    await executeSQL(30);
+  };
+
+  const handleDebugSQL = async () => {
+    if (executionError) {
+      await debugSQL(executionError);
+    }
+  };
+
+  const handleSaveSQL = async () => {
+    if (!saveTitle.trim()) {
+      alert('Please enter a title');
+      return;
+    }
+    await saveSQL(saveTitle);
+    setShowSaveDialog(false);
+    setSaveTitle('');
+  };
+
+  const handleLoadFromHistory = (query: string) => {
+    setSQLQuery(query);
+    setActiveTab('editor');
+  };
+
+  const handleEditorChange = (value: string | undefined) => {
+    if (value !== undefined) {
+      setSQLQuery(value);
+    }
+  };
+
+  return (
+    <div className="editor-page">
+      <header className="header">
+        <div className="header-left">
+          <h1>DB Assistant</h1>
+        </div>
+        <div className="header-right">
+          <span className="user-info">Welcome, {user?.username}</span>
+          <button onClick={logout} className="logout-btn">
+            Logout
+          </button>
+        </div>
+      </header>
+
+      <div className="editor-container">
+        <div className="sidebar">
+          <div className="sidebar-section">
+            <h3>Natural Language</h3>
+            <textarea
+              value={naturalQuery}
+              onChange={(e) => setNaturalQuery(e.target.value)}
+              placeholder="Describe what data you want to retrieve..."
+              className="natural-query-input"
+              disabled={isGenerating}
+            />
+            <button
+              onClick={handleGenerateSQL}
+              disabled={isGenerating || !naturalQuery.trim()}
+              className="btn btn-primary"
+            >
+              {isGenerating ? 'Generating...' : 'Generate SQL'}
+            </button>
+            {generationError && (
+              <div className="error-message">{generationError}</div>
+            )}
+          </div>
+
+          <div className="sidebar-section">
+            <h3>Quick Actions</h3>
+            <button
+              onClick={handleExecuteSQL}
+              disabled={isExecuting || !sqlQuery.trim()}
+              className="btn btn-success"
+            >
+              {isExecuting ? 'Executing...' : 'Execute'}
+            </button>
+            <button
+              onClick={handleDebugSQL}
+              disabled={isDebugging || !executionError}
+              className="btn btn-warning"
+            >
+              {isDebugging ? 'Debugging...' : 'Debug'}
+            </button>
+            <button
+              onClick={() => setShowSaveDialog(true)}
+              disabled={!sqlQuery.trim()}
+              className="btn btn-secondary"
+            >
+              Save Query
+            </button>
+            <button
+              onClick={clearResults}
+              className="btn btn-secondary"
+            >
+              Clear
+            </button>
+          </div>
+
+          {debugSuggestions && (
+            <div className="sidebar-section debug-suggestions">
+              <h3>Debug Suggestions</h3>
+              <p>{debugSuggestions.analysis_text}</p>
+              {debugSuggestions.suggested_sql && (
+                <div>
+                  <p className="suggestion-title">Suggested SQL:</p>
+                  <code>{debugSuggestions.suggested_sql}</code>
+                  <button
+                    onClick={() => setSQLQuery(debugSuggestions.suggested_sql)}
+                    className="btn btn-small"
+                  >
+                    Apply
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="main-content">
+          <div className="tabs">
+            <button
+              className={`tab ${activeTab === 'editor' ? 'active' : ''}`}
+              onClick={() => setActiveTab('editor')}
+            >
+              SQL Editor
+            </button>
+            <button
+              className={`tab ${activeTab === 'results' ? 'active' : ''}`}
+              onClick={() => setActiveTab('results')}
+            >
+              Results {executionResult && `(${executionResult.row_count})`}
+            </button>
+            <button
+              className={`tab ${activeTab === 'history' ? 'active' : ''}`}
+              onClick={() => setActiveTab('history')}
+            >
+              History
+            </button>
+          </div>
+
+          {activeTab === 'editor' && (
+            <div className="tab-content">
+              <Editor
+                height="100%"
+                defaultLanguage="sql"
+                value={sqlQuery}
+                onChange={handleEditorChange}
+                theme="vs-light"
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  wordWrap: 'on',
+                }}
+              />
+            </div>
+          )}
+
+          {activeTab === 'results' && (
+            <div className="tab-content">
+              {executionError && (
+                <div className="error-message error-large">{executionError}</div>
+              )}
+              {executionResult && (
+                <div className="results-container">
+                  <div className="results-info">
+                    <span>Rows: {executionResult.row_count}</span>
+                    <span>Time: {executionResult.exec_time_ms}ms</span>
+                  </div>
+                  {executionResult.success && (
+                    <div className="results-table-wrapper">
+                      <table className="results-table">
+                        <thead>
+                          <tr>
+                            {executionResult.columns.map((col) => (
+                              <th key={col}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {executionResult.rows.slice(0, 100).map((row, idx) => (
+                            <tr key={idx}>
+                              {executionResult.columns.map((col, colIdx) => (
+                                <td key={colIdx}>
+                                  {String(row[colIdx] ?? 'NULL')}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {executionResult.rows.length > 100 && (
+                        <p className="truncated-notice">
+                          Showing first 100 rows of {executionResult.row_count}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'history' && (
+            <div className="tab-content">
+              <div className="history-list">
+                {history.length === 0 ? (
+                  <p className="empty-message">No saved queries yet</p>
+                ) : (
+                  history.map((record) => (
+                    <div
+                      key={record.id}
+                      className="history-item"
+                      onClick={() => handleLoadFromHistory(record.sql)}
+                    >
+                      <div className="history-title">{record.title}</div>
+                      <div className="history-sql">{record.sql}</div>
+                      <div className="history-time">
+                        {new Date(record.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showSaveDialog && (
+        <div className="modal-overlay" onClick={() => setShowSaveDialog(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Save Query</h2>
+            <input
+              type="text"
+              value={saveTitle}
+              onChange={(e) => setSaveTitle(e.target.value)}
+              placeholder="Enter query title"
+              className="modal-input"
+              autoFocus
+            />
+            <div className="modal-buttons">
+              <button onClick={handleSaveSQL} className="btn btn-primary">
+                Save
+              </button>
+              <button
+                onClick={() => setShowSaveDialog(false)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

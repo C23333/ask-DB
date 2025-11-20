@@ -1,0 +1,13 @@
+{
+  "name": "db-asst-desktop",
+  "version": "0.1.0",
+  "description": "DB Assistant - Natural Language to SQL",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.5.0"
+  }
+}

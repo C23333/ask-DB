@@ -1,0 +1,53 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Backend
+backend/.vscode
+backend/bin/
+backend/dist/
+backend/*.exe
+backend/.DS_Store
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite
+web/.DS_Store
+web/*.local
+
+# Desktop
+desktop/node_modules/
+desktop/target/
+desktop/dist/
+desktop/.DS_Store
+desktop/src-tauri/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
